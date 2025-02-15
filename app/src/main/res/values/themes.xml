@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+        Base application theme.
+        Parent theme uses Material Components; make sure you have the dependency:
+        implementation("com.google.android.material:material:1.9.0")
+    -->
+    <style name="Theme.AppDocumentation" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Primary brand color. -->
+        <item name="colorPrimary">@color/purple_500</item>
+        <!-- A darker variant of the primary brand color. -->
+        <item name="colorPrimaryVariant">@color/purple_700</item>
+        <!-- Color used for text and icons displayed on top of the primary color. -->
+        <item name="colorOnPrimary">@android:color/white</item>
+        <!-- Secondary brand color. -->
+        <item name="colorSecondary">@color/teal_200</item>
+        <!-- A darker variant of the secondary brand color. -->
+        <item name="colorSecondaryVariant">@color/teal_700</item>
+        <!-- Color used for text and icons displayed on top of the secondary color. -->
+        <item name="colorOnSecondary">@android:color/black</item>
+    </style>
+</resources>
