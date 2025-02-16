@@ -14,6 +14,10 @@
         name="images"
         path="." />
 
+    <files-path
+        name="my_files"
+        path="."/>
+
     <!-- Alternatively, allow sharing from external storage (be cautious with permissions) -->
     <external-path
         name="external"
