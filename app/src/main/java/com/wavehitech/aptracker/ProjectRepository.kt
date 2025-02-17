@@ -4,6 +4,8 @@ import android.content.Context
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+
 
 class ProjectRepository(
     private val projectDao: ProjectDao,
@@ -58,22 +60,21 @@ class ProjectRepository(
 
     // Delete a project and its associated access points
     suspend fun deleteProjectWithAccessPoints(projectId: String) {
-        val accessPointsFlow = accessPointDao.getAccessPointsForProjectFlow(projectId)
-        accessPointsFlow.collect { points ->
-            // Delete pictures for each access point
-            points.forEach { accessPoint ->
-                accessPoint.pictures.forEach { picturePath ->
-                    val file = File(context.filesDir, picturePath)
-                    if (file.exists()) {
-                        file.delete()
-                    }
+        // Get the current list of access points for this project (only once)
+        val points = accessPointDao.getAccessPointsForProjectFlow(projectId).first()
+
+        // For each access point, delete its associated pictures from the filesystem
+        points.forEach { accessPoint ->
+            accessPoint.pictures.forEach { picturePath ->
+                val file = File(context.filesDir, picturePath)
+                if (file.exists()) {
+                    file.delete()
                 }
             }
-            // Delete each access point from the database
-            points.forEach { accessPoint ->
-                accessPointDao.deleteAccessPoint(accessPoint.id)
-            }
+            // Delete the access point from the database
+            accessPointDao.deleteAccessPoint(accessPoint.id)
         }
+
         // Finally, delete the project from the database.
         projectDao.deleteProject(projectId)
     }
