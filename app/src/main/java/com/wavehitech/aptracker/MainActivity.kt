@@ -703,7 +703,12 @@ fun ModernProjectDetailScreen(
             onSave = { progressState, isZipping, onDismissExport ->
                 // Prepare images before export: rename files for consistency
                 projectWithAP.accessPoints.forEach { ap ->
-                    val renamedImages = renameAPImages(context, ap.name, ap.pictures)
+                    val renamedImages = renameAPImages(
+                        context,
+                        projectWithAP.project.id, // Add project ID
+                        ap.name,
+                        ap.pictures
+                    )
                     if (renamedImages != ap.pictures) {
                         viewModel.updateAccessPoint(ap.copy(pictures = renamedImages))
                     }
@@ -724,9 +729,14 @@ fun ModernProjectDetailScreen(
             },
             // Handler for Share option
             onShare = { progressState, isZipping, onDismissExport ->
-                // Prepare images before sharing
+                // Prepare images before export: rename files for consistency
                 projectWithAP.accessPoints.forEach { ap ->
-                    val renamedImages = renameAPImages(context, ap.name, ap.pictures)
+                    val renamedImages = renameAPImages(
+                        context,
+                        projectWithAP.project.id, // Add project ID
+                        ap.name,
+                        ap.pictures
+                    )
                     if (renamedImages != ap.pictures) {
                         viewModel.updateAccessPoint(ap.copy(pictures = renamedImages))
                     }
@@ -783,7 +793,7 @@ fun ModernAPDetailScreen(
     accessPoint: AccessPointEntity,
     navController: NavHostController,
     viewModel: ProjectViewModel
-) {
+    ) {
     val context = LocalContext.current
 
     // State for the list of image file names stored in the database
@@ -804,8 +814,13 @@ fun ModernAPDetailScreen(
             file.exists()
         }
 
-        // Rename files to ensure sequential numbering (AP01-1.jpg, AP01-2.jpg, etc.)
-        val renamedImages = renameAPImages(context, accessPoint.name, validImages)
+        // Rename files to ensure sequential numbering, now including project ID
+        val renamedImages = renameAPImages(
+            context,
+            projectWithAP.project.id, // Pass the project ID
+            accessPoint.name,
+            validImages
+        )
 
         // Update the database if any changes were made
         if (renamedImages != fullSizeImagesState.value) {
@@ -864,8 +879,8 @@ fun ModernAPDetailScreen(
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 try {
-                    // Generate a unique sequential filename for the new image
-                    currentFileName = "${accessPoint.name}-${fullSizeImagesState.value.size + 1}.jpg"
+                    // Generate a unique sequential filename for the new image, including project ID
+                    currentFileName = "${projectWithAP.project.id}_${accessPoint.name}-${fullSizeImagesState.value.size + 1}.jpg"
                     val file = File(context.filesDir, currentFileName)
 
                     // Ensure parent directories exist
@@ -1035,7 +1050,12 @@ fun ModernAPDetailScreen(
                         fullSizeImagesState.value = fullSizeImagesState.value - selectedPictures.toSet()
 
                         // Renumber remaining files to maintain sequential naming
-                        val renamedImages = renameAPImages(context, accessPoint.name, fullSizeImagesState.value)
+                        val renamedImages = renameAPImages(
+                            context,
+                            projectWithAP.project.id, // Add project ID
+                            accessPoint.name,
+                            fullSizeImagesState.value
+                        )
                         fullSizeImagesState.value = renamedImages
 
                         // Update database with changes
@@ -1193,7 +1213,7 @@ fun exportProjectToZip(
                 // Get source file from internal storage
                 val file = File(context.filesDir, pictureName)
                 if (file.exists()) {
-                    // Create consistent filename for the ZIP entry
+                    // Create clean filename for the ZIP entry (without project ID)
                     val formattedFileName = "${ap.name}-${index + 1}.jpg"
                     val entry = ZipEntry(formattedFileName)
 
@@ -1217,6 +1237,19 @@ fun exportProjectToZip(
     }
 
     return zipFile
+}
+
+fun getCleanApNameFromFilename(filename: String): String {
+    // Find the underscore that separates project ID from AP name
+    val underscoreIndex = filename.indexOf('_')
+    if (underscoreIndex >= 0) {
+        // Extract the part after the underscore up to the dash
+        val dashIndex = filename.indexOf('-', underscoreIndex)
+        if (dashIndex >= 0) {
+            return filename.substring(underscoreIndex + 1, dashIndex)
+        }
+    }
+    return filename // Return the original if parsing fails
 }
 
 /**
@@ -1455,11 +1488,11 @@ fun shareZipFile(context: Context, zipFile: File) {
  * @param images List of file names (not absolute paths) stored in filesDir
  * @return New list of file names after renaming
  */
-fun renameAPImages(context: Context, accessPointName: String, images: List<String>): List<String> {
+fun renameAPImages(context: Context, projectId: String, accessPointName: String, images: List<String>): List<String> {
     return images.mapIndexed { index, fileName ->
-        // Generate new sequential filename (AP01-1.jpg, AP01-2.jpg, etc.)
+        // Generate new sequential filename that includes the project ID (proj123_AP01-1.jpg)
         val newIndex = index + 1
-        val newFileName = "$accessPointName-$newIndex.jpg"
+        val newFileName = "${projectId}_${accessPointName}-$newIndex.jpg"
 
         // Get file references
         val oldFile = File(context.filesDir, fileName)
