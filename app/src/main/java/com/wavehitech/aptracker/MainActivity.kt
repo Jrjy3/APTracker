@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterialApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@file:OptIn(ExperimentalMaterialApi::class, ExperimentalFoundationApi::class)
 
 package com.wavehitech.aptracker
 
@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
@@ -41,6 +42,38 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.material.FloatingActionButtonDefaults
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.Composable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import android.view.GestureDetector
+import android.view.MotionEvent
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.activity.compose.BackHandler
 import androidx.core.content.FileProvider
 import android.net.Uri
@@ -70,10 +103,35 @@ import android.provider.MediaStore
 import android.os.Build
 import androidx.exifinterface.media.ExifInterface
 import android.graphics.Matrix
+import androidx.compose.foundation.ExperimentalFoundationApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+// Icons for the + and check buttons in the top bar
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+
+// For drawing the circle and handles
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.Fill
+
+// For math operations
+import kotlin.math.abs
+
+// For the bottom slider control
+import androidx.compose.material.Slider
+
+// For animations of the slider panel
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+
+// For the background of the slider panel
+import androidx.compose.foundation.background
+
 
 /**
  * Data Models Section
@@ -251,6 +309,26 @@ fun ModernMainNavHost() {
             }
         }
 
+        composable(
+            "imageViewer/{projectId}/{apId}/{imageName}",
+            arguments = listOf(
+                navArgument("projectId") { type = NavType.StringType },
+                navArgument("apId") { type = NavType.StringType },
+                navArgument("imageName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val projectId = backStackEntry.arguments?.getString("projectId") ?: return@composable
+            val apId = backStackEntry.arguments?.getString("apId") ?: return@composable
+            val imageName = backStackEntry.arguments?.getString("imageName") ?: return@composable
+
+            ImageViewerScreen(
+                projectId = projectId,
+                apId = apId,
+                imageName = imageName,
+                navController = navController
+            )
+        }
+
         // Access point detail screen - shows details for a specific AP
         composable(
             "apDetail/{projectId}/{apId}",
@@ -290,6 +368,565 @@ fun ModernMainNavHost() {
             }
         }
     }
+}
+
+@Composable
+fun ImageViewerScreen(
+    projectId: String,
+    apId: String,
+    imageName: String,
+    navController: NavHostController
+) {
+    val context = LocalContext.current
+
+    // Get file reference
+    val file = File(context.filesDir, imageName)
+
+    // Get content URI for the file
+    val imageUri = try {
+        FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.provider",
+            file
+        )
+    } catch (e: Exception) {
+        Log.e("ImageViewerScreen", "Error getting URI for file: $imageName", e)
+        null
+    }
+
+    // State for zoom functionality
+    var targetScale by remember { mutableStateOf(1f) }
+    var targetOffsetX by remember { mutableStateOf(0f) }
+    var targetOffsetY by remember { mutableStateOf(0f) }
+
+    // State for circle overlay
+    var showCircle by remember { mutableStateOf(false) }
+    var circlePosition by remember { mutableStateOf(Offset.Zero) }
+    var circleRadius by remember { mutableStateOf(100f) }
+    var circleThickness by remember { mutableStateOf(35f) }
+    var selectedHandle by remember { mutableStateOf<String?>(null) }
+
+    // Remember container size to position circle appropriately
+    val containerSize = remember { mutableStateOf(Size.Zero) }
+    var imageSize by remember { mutableStateOf(Size.Zero) }
+
+    // Initialize circle position on first showing
+    LaunchedEffect(showCircle, containerSize.value) {
+        if (showCircle && circlePosition == Offset.Zero && containerSize.value != Size.Zero) {
+            // Position at center horizontally, 75% up from bottom
+            circlePosition = Offset(
+                containerSize.value.width / 2,
+                containerSize.value.height * 0.25f  // 75% up from bottom (25% from top)
+            )
+        }
+    }
+
+    val minScale = 1f
+    val maxScale = 3f  // Maximum zoom level
+
+    // Track if we're currently performing a gesture
+    var isGestureInProgress by remember { mutableStateOf(false) }
+
+    // Create two sets of values - one for gestures (direct) and one for programmatic changes (animated)
+    val scaleAnimated by animateFloatAsState(
+        targetValue = targetScale,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        // Only animate when not in a gesture
+        finishedListener = {
+            isGestureInProgress = false
+        }
+    )
+
+    val offsetXAnimated by animateFloatAsState(
+        targetValue = targetOffsetX,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
+    )
+
+    val offsetYAnimated by animateFloatAsState(
+        targetValue = targetOffsetY,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
+    )
+
+    // The values we actually use for rendering
+    val scale = if (isGestureInProgress) targetScale else scaleAnimated
+    val offsetX = if (isGestureInProgress) targetOffsetX else offsetXAnimated
+    val offsetY = if (isGestureInProgress) targetOffsetY else offsetYAnimated
+
+    // Function to calculate max allowed offsets based on current scale
+    fun calculateMaxOffsets(scale: Float): Pair<Float, Float> {
+        val scaledImageWidth = imageSize.width * scale
+        val scaledImageHeight = imageSize.height * scale
+        val containerWidth = containerSize.value.width
+        val containerHeight = containerSize.value.height
+
+        // Calculate how much the image extends beyond the container (if at all)
+        val horizontalOverflow = (scaledImageWidth - containerWidth) / 2f
+        val verticalOverflow = (scaledImageHeight - containerHeight) / 2f
+
+        return Pair(
+            horizontalOverflow.coerceAtLeast(0f),
+            verticalOverflow.coerceAtLeast(0f)
+        )
+    }
+
+    // Transform state for gesture handling
+    val state = rememberTransformableState { zoomChange, offsetChange, _ ->
+        isGestureInProgress = true
+
+        // Store previous scale to check if we're zooming out completely
+        val previousScale = targetScale
+
+        // Apply zoom constraints
+        targetScale = (targetScale * zoomChange).coerceIn(minScale, maxScale)
+
+        // Handle zooming based on scale level
+        if (targetScale > 1f) {
+            // Apply offset with constraints based on zoom level
+            // Calculate maximum allowed offsets for panning
+            val (maxOffsetX, maxOffsetY) = calculateMaxOffsets(targetScale)
+
+            // Apply scaleFactor to make panning match finger movement speed
+            val scaledDeltaX = offsetChange.x * targetScale
+            val scaledDeltaY = offsetChange.y * targetScale
+
+            // Apply panning with constraints to prevent showing whitespace
+            targetOffsetX = (targetOffsetX + scaledDeltaX).coerceIn(-maxOffsetX, maxOffsetX)
+            targetOffsetY = (targetOffsetY + scaledDeltaY).coerceIn(-maxOffsetY, maxOffsetY)
+        } else {
+            // Reset offset when at minimum zoom
+            targetOffsetX = 0f
+            targetOffsetY = 0f
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    // Extract AP name from filename for display
+                    val apName = getCleanApNameFromFilename(imageName)
+                    Text("$apName Image", style = MaterialTheme.typography.h6)
+                },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    // Add button to toggle circle overlay
+                    IconButton(
+                        onClick = { showCircle = !showCircle }
+                    ) {
+                        Icon(
+                            imageVector = if (showCircle) Icons.Default.Check else Icons.Default.Add,
+                            contentDescription = if (showCircle) "Hide Circle" else "Add Circle"
+                        )
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            // Show thickness slider when circle is visible
+            AnimatedVisibility(
+                visible = showCircle,
+                enter = fadeIn() + slideInVertically { it },
+                exit = fadeOut() + slideOutVertically { it }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colors.surface)
+                        .padding(16.dp)
+                ) {
+                    Text("Circle Thickness: ${circleThickness.toInt()}px")
+                    Slider(
+                        value = circleThickness,
+                        onValueChange = { circleThickness = it },
+                        valueRange = 5f..60f,
+                        steps = 11,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues),
+            contentAlignment = Alignment.Center
+        ) {
+            if (imageUri != null) {
+                // Display the image with zoom capabilities
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { size ->
+                            containerSize.value = Size(size.width.toFloat(), size.height.toFloat())
+                        }
+                ) {
+                    // Image with zoom and pan
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(imageUri)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "Full-size image",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            // Apply transformations for zoom and pan
+                            .graphicsLayer(
+                                scaleX = scale,
+                                scaleY = scale,
+                                translationX = offsetX,
+                                translationY = offsetY
+                            )
+                            // Only allow transform gestures when circle is not visible
+                            .then(
+                                if (!showCircle) {
+                                    Modifier
+                                        .transformable(state = state)
+                                        .pointerInput(Unit) {
+                                            detectTapGestures(
+                                                onDoubleTap = { tapOffset ->
+                                                    isGestureInProgress = false
+                                                    if (targetScale > 1f) {
+                                                        // Reset zoom with animation
+                                                        targetScale = 1f
+                                                        targetOffsetX = 0f
+                                                        targetOffsetY = 0f
+                                                    } else {
+                                                        // Zoom in centered on tap location with animation
+                                                        targetScale = 2.5f
+
+                                                        // Calculate offset to center zoom on tap point
+                                                        val containerSize = containerSize.value
+                                                        val containerCenterX = containerSize.width / 2f
+                                                        val containerCenterY = containerSize.height / 2f
+
+                                                        // Calculate distance from center
+                                                        val distanceX = tapOffset.x - containerCenterX
+                                                        val distanceY = tapOffset.y - containerCenterY
+
+                                                        // Apply scaling factor to offset (with the negative factor to invert direction)
+                                                        targetOffsetX = distanceX * (1 - 1/targetScale) * -1f
+                                                        targetOffsetY = distanceY * (1 - 1/targetScale) * -1f
+
+                                                        // Constrain the target offset to prevent whitespace
+                                                        val (maxOffsetX, maxOffsetY) = calculateMaxOffsets(targetScale)
+                                                        targetOffsetX = targetOffsetX.coerceIn(-maxOffsetX, maxOffsetX)
+                                                        targetOffsetY = targetOffsetY.coerceIn(-maxOffsetY, maxOffsetY)
+                                                    }
+                                                }
+                                            )
+                                        }
+                                } else {
+                                    Modifier
+                                }
+                            ),
+                        contentScale = ContentScale.Fit,
+                        // Add listener to capture the actual image dimensions
+                        onSuccess = { success ->
+                            val drawable = success.result.drawable
+                            // Store the intrinsic dimensions of the image
+                            imageSize = Size(
+                                drawable.intrinsicWidth.toFloat(),
+                                drawable.intrinsicHeight.toFloat()
+                            )
+                        }
+                    )
+
+                    // Draw circle overlay when enabled
+                    if (showCircle) {
+                        // Circle overlay with resize handles
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .pointerInput(Unit) {
+                                    detectDragGestures(
+                                        onDragStart = { offset ->
+                                            // Check if a resize handle was touched
+                                            val handleSize = 40f
+
+                                            // East handle (right)
+                                            val eastHandle = Offset(circlePosition.x + circleRadius, circlePosition.y)
+                                            if ((offset - eastHandle).getDistance() < handleSize) {
+                                                selectedHandle = "east"
+                                                return@detectDragGestures
+                                            }
+
+                                            // West handle (left)
+                                            val westHandle = Offset(circlePosition.x - circleRadius, circlePosition.y)
+                                            if ((offset - westHandle).getDistance() < handleSize) {
+                                                selectedHandle = "west"
+                                                return@detectDragGestures
+                                            }
+
+                                            // North handle (top)
+                                            val northHandle = Offset(circlePosition.x, circlePosition.y - circleRadius)
+                                            if ((offset - northHandle).getDistance() < handleSize) {
+                                                selectedHandle = "north"
+                                                return@detectDragGestures
+                                            }
+
+                                            // South handle (bottom)
+                                            val southHandle = Offset(circlePosition.x, circlePosition.y + circleRadius)
+                                            if ((offset - southHandle).getDistance() < handleSize) {
+                                                selectedHandle = "south"
+                                                return@detectDragGestures
+                                            }
+
+                                            // If we're near the circle edge (but not on a handle), move the entire circle
+                                            val distanceFromCenter = (offset - circlePosition).getDistance()
+                                            val isNearEdge = abs(distanceFromCenter - circleRadius) < handleSize
+
+                                            if (distanceFromCenter < circleRadius || isNearEdge) {
+                                                selectedHandle = "move"
+                                            } else {
+                                                selectedHandle = null
+                                            }
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+
+                                            when (selectedHandle) {
+                                                "east" -> {
+                                                    // Resize from right
+                                                    val newRadius = (change.position.x - circlePosition.x)
+                                                    if (newRadius > 30f) { // Minimum size check
+                                                        circleRadius = newRadius
+                                                    }
+                                                }
+                                                "west" -> {
+                                                    // Resize from left
+                                                    val newRadius = (circlePosition.x - change.position.x)
+                                                    if (newRadius > 30f) {
+                                                        circleRadius = newRadius
+                                                    }
+                                                }
+                                                "north" -> {
+                                                    // Resize from top
+                                                    val newRadius = (circlePosition.y - change.position.y)
+                                                    if (newRadius > 30f) {
+                                                        circleRadius = newRadius
+                                                    }
+                                                }
+                                                "south" -> {
+                                                    // Resize from bottom
+                                                    val newRadius = (change.position.y - circlePosition.y)
+                                                    if (newRadius > 30f) {
+                                                        circleRadius = newRadius
+                                                    }
+                                                }
+                                                "move" -> {
+                                                    // Move circle
+                                                    circlePosition = Offset(
+                                                        (circlePosition.x + dragAmount.x).coerceIn(
+                                                            circleRadius,
+                                                            containerSize.value.width - circleRadius
+                                                        ),
+                                                        (circlePosition.y + dragAmount.y).coerceIn(
+                                                            circleRadius,
+                                                            containerSize.value.height - circleRadius
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            selectedHandle = null
+                                        }
+                                    )
+                                }
+                        ) {
+                            // Draw the circle
+                            drawCircle(
+                                color = Color.Red,
+                                radius = circleRadius,
+                                center = circlePosition,
+                                style = Stroke(width = circleThickness)
+                            )
+
+                            // Draw handles if circle is visible
+                            val handleRadius = 15f
+
+                            // Draw east handle (right)
+                            drawCircle(
+                                color = Color.White,
+                                radius = handleRadius,
+                                center = Offset(circlePosition.x + circleRadius, circlePosition.y),
+                                style = Fill
+                            )
+                            drawCircle(
+                                color = Color.Red,
+                                radius = handleRadius,
+                                center = Offset(circlePosition.x + circleRadius, circlePosition.y),
+                                style = Stroke(width = 2f)
+                            )
+
+                            // Draw west handle (left)
+                            drawCircle(
+                                color = Color.White,
+                                radius = handleRadius,
+                                center = Offset(circlePosition.x - circleRadius, circlePosition.y),
+                                style = Fill
+                            )
+                            drawCircle(
+                                color = Color.Red,
+                                radius = handleRadius,
+                                center = Offset(circlePosition.x - circleRadius, circlePosition.y),
+                                style = Stroke(width = 2f)
+                            )
+
+                            // Draw north handle (top)
+                            drawCircle(
+                                color = Color.White,
+                                radius = handleRadius,
+                                center = Offset(circlePosition.x, circlePosition.y - circleRadius),
+                                style = Fill
+                            )
+                            drawCircle(
+                                color = Color.Red,
+                                radius = handleRadius,
+                                center = Offset(circlePosition.x, circlePosition.y - circleRadius),
+                                style = Stroke(width = 2f)
+                            )
+
+                            // Draw south handle (bottom)
+                            drawCircle(
+                                color = Color.White,
+                                radius = handleRadius,
+                                center = Offset(circlePosition.x, circlePosition.y + circleRadius),
+                                style = Fill
+                            )
+                            drawCircle(
+                                color = Color.Red,
+                                radius = handleRadius,
+                                center = Offset(circlePosition.x, circlePosition.y + circleRadius),
+                                style = Stroke(width = 2f)
+                            )
+                        }
+                    }
+                }
+
+                // Define custom animation specs for enhanced movement
+                // Overshoot easing - goes beyond the target position and bounces back (for enter animation)
+                val overshootEasing = CubicBezierEasing(0.0f, 0.75f, 0.1f, 1.1f)
+
+                // Anticipation easing - pulls back slightly before moving to target (for exit animation)
+                val anticipationEasing = CubicBezierEasing(0.5f, -0.2f, 0.9f, 0.3f)
+
+                // Animate the size of the button for additional visual interest
+                val buttonScale by animateFloatAsState(
+                    targetValue = 1f,
+                    // Start larger than final size and bounce down
+                    animationSpec = tween(
+                        durationMillis = 500,
+                        easing = CubicBezierEasing(0.2f, 1.5f, 0.3f, 1.0f)
+                    )
+                )
+
+                // Reset zoom button overlay with enhanced animations
+                AnimatedVisibility(
+                    visible = scale > 1.01f && !showCircle, // Only show when zoomed in AND circle not visible
+                    enter = slideInVertically(
+                        // Start from further below for more dramatic overshoot
+                        initialOffsetY = { it + 40 },
+                        animationSpec = tween(
+                            // Longer duration for more noticeable effect
+                            durationMillis = 450,
+                            easing = overshootEasing
+                        )
+                    ) + fadeIn(
+                        // Slightly faster fade-in
+                        animationSpec = tween(300)
+                    ),
+                    exit = slideOutVertically(
+                        // First move upward slightly (anticipation) then downward
+                        targetOffsetY = { it + 30 },
+                        animationSpec = tween(
+                            durationMillis = 400,
+                            easing = anticipationEasing
+                        )
+                    ) + fadeOut(
+                        // Fade out slightly faster than movement
+                        animationSpec = tween(300)
+                    ),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // Add significant padding on all sides to accommodate shadows
+                        .padding(36.dp),
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.BottomEnd
+                    ) {
+                        // Use offset to create space for shadow and ensure button stays in right position
+                        val shadowOffset = with(LocalDensity.current) { 8.dp.toPx() }
+
+                        FloatingActionButton(
+                            onClick = {
+                                // Reset zoom with smooth animation
+                                isGestureInProgress = false
+                                targetScale = 1f
+
+                                // Small delay to allow scale animation to start before resetting position
+                                CoroutineScope(Dispatchers.Main).launch {
+                                    delay(50)
+                                    targetOffsetX = 0f
+                                    targetOffsetY = 0f
+                                }
+                            },
+                            backgroundColor = MaterialTheme.colors.primary,
+                            elevation = FloatingActionButtonDefaults.elevation(
+                                defaultElevation = 6.dp,
+                                pressedElevation = 8.dp
+                            ),
+                            modifier = Modifier
+                                .graphicsLayer(
+                                    scaleX = buttonScale,
+                                    scaleY = buttonScale,
+                                    translationY = -shadowOffset // Lift button to ensure shadow is visible
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ZoomOut,
+                                contentDescription = "Reset Zoom",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Error state
+                Text("Error loading image", style = MaterialTheme.typography.h6)
+            }
+        }
+    }
+
+    // Handle back button explicitly
+    BackHandler {
+        if (showCircle) {
+            // If circle is visible, hide it first
+            showCircle = false
+        } else {
+            // Otherwise navigate back
+            navController.popBackStack()
+        }
+    }
+}
+
+// Helper function to calculate offset for centering zoom on tap point
+private fun calculateCenteredTapOffset(tapOffset: Offset, containerSize: Size, scale: Float): Offset {
+    // Get the center of the container
+    val containerCenter = Offset(containerSize.width / 2f, containerSize.height / 2f)
+
+    // Calculate the distance from tap point to center
+    val distanceFromCenter = tapOffset - containerCenter
+
+    // Apply scaling factor to offset to center the zoom at the tap location
+    // The multiplier may need adjustment based on testing
+    return distanceFromCenter * (1 - 1/scale) * -1f
 }
 
 /**
@@ -967,17 +1604,7 @@ fun ModernAPDetailScreen(
                                                 }
                                             } else {
                                                 // Open image viewer in normal mode
-                                                try {
-                                                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                                                        setDataAndType(imageUri, "image/*")
-                                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                    }
-                                                    context.startActivity(intent)
-                                                } catch (e: Exception) {
-                                                    Log.e("ModernAPDetailScreen", "Error viewing image: ${e.message}", e)
-                                                    Toast.makeText(context, "Error viewing image", Toast.LENGTH_SHORT).show()
-                                                }
+                                                navController.navigate("imageViewer/${projectWithAP.project.id}/${accessPoint.id}/${pictureName}")
                                             }
                                         },
                                         onLongClick = {
