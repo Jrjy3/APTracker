@@ -24,4 +24,5 @@ interface AccessPointDao {
     @Query("SELECT * FROM access_points WHERE id = :id LIMIT 1")
     suspend fun getAccessPointById(id: String): AccessPointEntity?
 
+
 }

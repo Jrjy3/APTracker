@@ -64,15 +64,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
-import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import android.view.GestureDetector
-import android.view.MotionEvent
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.activity.compose.BackHandler
 import androidx.core.content.FileProvider
@@ -96,6 +88,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import android.graphics.BitmapFactory
 import android.util.Log
 import android.content.ContentValues
@@ -109,9 +102,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-// Icons for the + and check buttons in the top bar
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.DropdownMenu
+import androidx.compose.material.DropdownMenuItem
+import android.graphics.drawable.BitmapDrawable
 
 // For drawing the circle and handles
 import androidx.compose.foundation.Canvas
@@ -124,13 +121,6 @@ import kotlin.math.abs
 
 // For the bottom slider control
 import androidx.compose.material.Slider
-
-// For animations of the slider panel
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-
-// For the background of the slider panel
-import androidx.compose.foundation.background
 
 
 /**
@@ -228,8 +218,8 @@ fun ModernNewProjectScreen(
                             AccessPointEntity(
                                 id = UUID.randomUUID().toString(),
                                 projectId = newProject.id,
-                                name = apName,
-                                pictures = emptyList()
+                                name = apName
+                                // No pictures parameter needed anymore
                             )
                         }
 
@@ -267,14 +257,10 @@ class MainActivity : ComponentActivity() {
  */
 @Composable
 fun ModernMainNavHost() {
-    // Create navigation controller to handle screen transitions
     val navController = rememberNavController()
-
-    // Initialize ViewModel with factory to provide application context
     val viewModel: ProjectViewModel =
         viewModel(factory = ProjectViewModelFactory(LocalContext.current))
 
-    // Setup navigation graph with all possible routes
     NavHost(navController = navController, startDestination = "projectList") {
         // Project list screen - displays all projects
         composable("projectList") {
@@ -310,21 +296,21 @@ fun ModernMainNavHost() {
         }
 
         composable(
-            "imageViewer/{projectId}/{apId}/{imageName}",
+            "imageViewer/{projectId}/{apId}/{imageId}",
             arguments = listOf(
                 navArgument("projectId") { type = NavType.StringType },
                 navArgument("apId") { type = NavType.StringType },
-                navArgument("imageName") { type = NavType.StringType }
+                navArgument("imageId") { type = NavType.StringType }
             )
         ) { backStackEntry ->
             val projectId = backStackEntry.arguments?.getString("projectId") ?: return@composable
             val apId = backStackEntry.arguments?.getString("apId") ?: return@composable
-            val imageName = backStackEntry.arguments?.getString("imageName") ?: return@composable
+            val imageId = backStackEntry.arguments?.getString("imageId") ?: return@composable
 
             ImageViewerScreen(
                 projectId = projectId,
                 apId = apId,
-                imageName = imageName,
+                imageId = imageId,
                 navController = navController
             )
         }
@@ -374,67 +360,120 @@ fun ModernMainNavHost() {
 fun ImageViewerScreen(
     projectId: String,
     apId: String,
-    imageName: String,
+    imageId: String,
     navController: NavHostController
 ) {
     val context = LocalContext.current
+    val viewModel: ProjectViewModel = viewModel(factory = ProjectViewModelFactory(context))
 
-    // Get file reference
-    val file = File(context.filesDir, imageName)
+    // States for image data
+    val imageEntity = remember { mutableStateOf<ImageEntity?>(null) }
+    val originalImageEntity = remember { mutableStateOf<ImageEntity?>(null) }
+    var showOptionsMenu by remember { mutableStateOf(false) }
 
-    // Get content URI for the file
-    val imageUri = try {
-        FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.provider",
-            file
-        )
-    } catch (e: Exception) {
-        Log.e("ImageViewerScreen", "Error getting URI for file: $imageName", e)
-        null
-    }
-
-    // State for zoom functionality
-    var targetScale by remember { mutableStateOf(1f) }
-    var targetOffsetX by remember { mutableStateOf(0f) }
-    var targetOffsetY by remember { mutableStateOf(0f) }
-
-    // State for circle overlay
+    // UI states
     var showCircle by remember { mutableStateOf(false) }
     var circlePosition by remember { mutableStateOf(Offset.Zero) }
     var circleRadius by remember { mutableStateOf(100f) }
     var circleThickness by remember { mutableStateOf(35f) }
     var selectedHandle by remember { mutableStateOf<String?>(null) }
 
-    // Remember container size to position circle appropriately
+    // Container and image size states
     val containerSize = remember { mutableStateOf(Size.Zero) }
     var imageSize by remember { mutableStateOf(Size.Zero) }
+    val imageBitmap = remember { mutableStateOf<Bitmap?>(null) }
 
-    // Initialize circle position on first showing
+    var isExplicitlyViewingOriginal by remember { mutableStateOf(false) }
+
+    // Load image data when screen is shown
+    LaunchedEffect(imageId) {
+        withContext(Dispatchers.IO) {
+            try {
+                // Get current image
+                val image = viewModel.getImageById(imageId)
+                Log.d("ImageViewerScreen", "Current image: ${image?.filename}, isCircled: ${image?.isCircled}")
+
+                withContext(Dispatchers.Main) {
+                    imageEntity.value = image
+                }
+
+                // Get original if this is a circled version
+                if (image?.isCircled == true && image.originalImageId != null) {
+                    Log.d("ImageViewerScreen", "Getting original image with ID: ${image.originalImageId}")
+                    val original = viewModel.getImageById(image.originalImageId)
+                    Log.d("ImageViewerScreen", "Original image: ${original?.filename}")
+
+                    withContext(Dispatchers.Main) {
+                        originalImageEntity.value = original
+                    }
+                }
+
+                // Only redirect to circled version if we're not explicitly viewing the original
+                if (imageEntity.value?.isCircled == false && !isExplicitlyViewingOriginal) {
+                    val circled = viewModel.getCircledVersionOfImage(imageEntity.value?.id ?: "")
+                    Log.d("ImageViewerScreen", "Circled version: ${circled?.filename}")
+
+                    if (circled != null) {
+                        withContext(Dispatchers.Main) {
+                            // If a circled version exists, navigate to it instead
+                            navController.navigate("imageViewer/$projectId/$apId/${circled.id}") {
+                                popUpTo("imageViewer/$projectId/$apId/$imageId") { inclusive = true }
+                            }
+                        }
+                    }
+                }
+
+                // Reset the flag after loading is complete
+                withContext(Dispatchers.Main) {
+                    isExplicitlyViewingOriginal = false
+                }
+            } catch (e: Exception) {
+                Log.e("ImageViewerScreen", "Error loading image data: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Error loading image: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // Initialize circle position when shown
     LaunchedEffect(showCircle, containerSize.value) {
         if (showCircle && circlePosition == Offset.Zero && containerSize.value != Size.Zero) {
-            // Position at center horizontally, 75% up from bottom
+            // Position circle at 25% from top, center horizontally
             circlePosition = Offset(
                 containerSize.value.width / 2,
-                containerSize.value.height * 0.25f  // 75% up from bottom (25% from top)
+                containerSize.value.height * 0.25f
             )
         }
     }
 
-    val minScale = 1f
-    val maxScale = 3f  // Maximum zoom level
+    // Check if this is a circled version
+    val isCircledVersion = imageEntity.value?.isCircled == true
 
-    // Track if we're currently performing a gesture
+    // Get file reference
+    val file = imageEntity.value?.let { File(context.filesDir, it.filename) }
+
+    // Get content URI
+    val imageUri = try {
+        file?.let {
+            FileProvider.getUriForFile(context, "${context.packageName}.provider", it)
+        }
+    } catch (e: Exception) {
+        Log.e("ImageViewerScreen", "Error getting URI: ${e.message}", e)
+        null
+    }
+
+    // Image transform state setup
+    var targetScale by remember { mutableStateOf(1f) }
+    var targetOffsetX by remember { mutableStateOf(0f) }
+    var targetOffsetY by remember { mutableStateOf(0f) }
     var isGestureInProgress by remember { mutableStateOf(false) }
 
-    // Create two sets of values - one for gestures (direct) and one for programmatic changes (animated)
+    // Animation values
     val scaleAnimated by animateFloatAsState(
         targetValue = targetScale,
         animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
-        // Only animate when not in a gesture
-        finishedListener = {
-            isGestureInProgress = false
-        }
+        finishedListener = { isGestureInProgress = false }
     )
 
     val offsetXAnimated by animateFloatAsState(
@@ -447,19 +486,18 @@ fun ImageViewerScreen(
         animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
     )
 
-    // The values we actually use for rendering
+    // Rendering values
     val scale = if (isGestureInProgress) targetScale else scaleAnimated
     val offsetX = if (isGestureInProgress) targetOffsetX else offsetXAnimated
     val offsetY = if (isGestureInProgress) targetOffsetY else offsetYAnimated
 
-    // Function to calculate max allowed offsets based on current scale
+    // Function to calculate max allowed offsets
     fun calculateMaxOffsets(scale: Float): Pair<Float, Float> {
         val scaledImageWidth = imageSize.width * scale
         val scaledImageHeight = imageSize.height * scale
         val containerWidth = containerSize.value.width
         val containerHeight = containerSize.value.height
 
-        // Calculate how much the image extends beyond the container (if at all)
         val horizontalOverflow = (scaledImageWidth - containerWidth) / 2f
         val verticalOverflow = (scaledImageHeight - containerHeight) / 2f
 
@@ -473,29 +511,174 @@ fun ImageViewerScreen(
     val state = rememberTransformableState { zoomChange, offsetChange, _ ->
         isGestureInProgress = true
 
-        // Store previous scale to check if we're zooming out completely
-        val previousScale = targetScale
-
         // Apply zoom constraints
-        targetScale = (targetScale * zoomChange).coerceIn(minScale, maxScale)
+        targetScale = (targetScale * zoomChange).coerceIn(1f, 3f)
 
-        // Handle zooming based on scale level
         if (targetScale > 1f) {
-            // Apply offset with constraints based on zoom level
-            // Calculate maximum allowed offsets for panning
+            // Calculate max offsets
             val (maxOffsetX, maxOffsetY) = calculateMaxOffsets(targetScale)
 
-            // Apply scaleFactor to make panning match finger movement speed
+            // Apply scaled delta
             val scaledDeltaX = offsetChange.x * targetScale
             val scaledDeltaY = offsetChange.y * targetScale
 
-            // Apply panning with constraints to prevent showing whitespace
+            // Constrain offsets
             targetOffsetX = (targetOffsetX + scaledDeltaX).coerceIn(-maxOffsetX, maxOffsetX)
             targetOffsetY = (targetOffsetY + scaledDeltaY).coerceIn(-maxOffsetY, maxOffsetY)
         } else {
-            // Reset offset when at minimum zoom
+            // Reset offset at minimum zoom
             targetOffsetX = 0f
             targetOffsetY = 0f
+        }
+    }
+
+    // Function to save image with circle
+    fun saveImageWithCircle() {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                // Get original bitmap
+                val originalBitmap = imageBitmap.value ?: return@launch
+
+                // Create mutable copy
+                val circledBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true)
+
+                // Create canvas
+                val canvas = android.graphics.Canvas(circledBitmap)
+
+                // Calculate scale factors
+                val containerWidth = containerSize.value.width
+                val containerHeight = containerSize.value.height
+                val imageWidth = originalBitmap.width.toFloat()
+                val imageHeight = originalBitmap.height.toFloat()
+
+                val scaleX = imageWidth / containerWidth
+                val scaleY = imageHeight / containerHeight
+
+                // Scale circle dimensions
+                val scaledCircleX = circlePosition.x * scaleX
+                val scaledCircleY = circlePosition.y * scaleY
+                val scaledCircleRadius = circleRadius * scaleX
+                val scaledStrokeWidth = circleThickness * scaleX
+
+                // Create paint
+                val paint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.RED
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = scaledStrokeWidth
+                    isAntiAlias = true
+                }
+
+                // Draw circle
+                canvas.drawCircle(scaledCircleX, scaledCircleY, scaledCircleRadius, paint)
+
+                // Create circled filename
+                val originalFilename = imageEntity.value?.filename ?: return@launch
+                val extension = originalFilename.substringAfterLast('.')
+                val baseName = originalFilename.substringBeforeLast('.')
+                val circledFilename = "${baseName}_circle_.${extension}"
+
+                // Save new image
+                val circledFile = File(context.filesDir, circledFilename)
+                FileOutputStream(circledFile).use { out ->
+                    circledBitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                }
+
+                // Create new image entity for circled version
+                val currentImage = imageEntity.value ?: return@launch
+                val circledImageEntity = ImageEntity(
+                    accessPointId = apId,
+                    filename = circledFilename,
+                    isCircled = true,
+                    originalImageId = currentImage.id,
+                    orderIndex = currentImage.orderIndex
+                )
+
+                // Save to database
+                viewModel.addImage(circledImageEntity)
+
+                // Clear image cache
+                withContext(Dispatchers.Main) {
+                    coil.ImageLoader.Builder(context)
+                        .allowHardware(true)
+                        .crossfade(true)
+                        .build()
+
+                    // Extract AP name for the toast message
+                    val apName = currentImage.filename.let {
+                        val projectIdAndApName = it.split('_')
+                        val apAndNumber = if (projectIdAndApName.size > 1) {
+                            val apAndNumberParts = projectIdAndApName[1].split('-')
+                            if (apAndNumberParts.size > 1) {
+                                "${apAndNumberParts[0]}-${apAndNumberParts[1].substringBefore('.')}"
+                            } else {
+                                apAndNumberParts[0]
+                            }
+                        } else {
+                            "Image"
+                        }
+                        apAndNumber
+                    }
+
+                    // Show toast instead of dialog
+                    Toast.makeText(
+                        context,
+                        "$apName with circle has been saved",
+                        Toast.LENGTH_SHORT
+                    ).show()
+
+                    // Hide circle UI
+                    showCircle = false
+
+                    // Small delay to ensure database update completes
+                    delay(200)
+
+                    // Navigate to the circled version
+                    navController.navigate("imageViewer/$projectId/$apId/${circledImageEntity.id}") {
+                        popUpTo("imageViewer/$projectId/$apId/$imageId") { inclusive = true }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ImageViewerScreen", "Error saving image with circle: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Error saving image: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    // Function to view original image
+    fun viewOriginalImage() {
+        if (isCircledVersion && originalImageEntity.value != null) {
+            // First, verify that the original entity has a valid ID
+            val originalId = originalImageEntity.value?.id
+            if (originalId != null) {
+                // Set the flag that we're explicitly viewing the original
+                isExplicitlyViewingOriginal = true
+
+                // Log for debugging
+                Log.d("ImageViewerScreen", "Navigating to original image with ID: $originalId")
+
+                // Navigate to original using popUpTo to clear the back stack
+                navController.navigate("imageViewer/$projectId/$apId/$originalId") {
+                    popUpTo("imageViewer/$projectId/$apId/$imageId") { inclusive = true }
+                }
+            } else {
+                // Show error toast if original ID is null
+                Toast.makeText(context, "Error: Original image not found", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            // Show toast if not a circled version or original not found
+            Toast.makeText(context, "No original image available", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+// Add a state variable for the confirmation dialog
+    var showRevertConfirmation by remember { mutableStateOf(false) }
+
+    // Update the revertToOriginal function to show the dialog instead of immediately deleting
+    fun revertToOriginal() {
+        if (isCircledVersion && originalImageEntity.value != null) {
+            showRevertConfirmation = true
         }
     }
 
@@ -503,9 +686,23 @@ fun ImageViewerScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    // Extract AP name from filename for display
-                    val apName = getCleanApNameFromFilename(imageName)
-                    Text("$apName Image", style = MaterialTheme.typography.h6)
+                    // Extract AP name from the entity
+                    val apName = imageEntity.value?.let {
+                        val projectIdAndApName = it.filename.split('_')
+                        val apAndNumber = if (projectIdAndApName.size > 1) {
+                            val apAndNumberParts = projectIdAndApName[1].split('-')
+                            if (apAndNumberParts.size > 1) {
+                                // Format as "AP01-1" (AP name and image number)
+                                "${apAndNumberParts[0]}-${apAndNumberParts[1].substringBefore('.')}"
+                            } else {
+                                apAndNumberParts[0]
+                            }
+                        } else {
+                            "Image"
+                        }
+                        apAndNumber
+                    } ?: "Image"
+                    Text("$apName", style = MaterialTheme.typography.h6)
                 },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
@@ -513,20 +710,51 @@ fun ImageViewerScreen(
                     }
                 },
                 actions = {
-                    // Add button to toggle circle overlay
-                    IconButton(
-                        onClick = { showCircle = !showCircle }
-                    ) {
-                        Icon(
-                            imageVector = if (showCircle) Icons.Default.Check else Icons.Default.Add,
-                            contentDescription = if (showCircle) "Hide Circle" else "Add Circle"
-                        )
+                    // Circle editing actions
+                    if (showCircle) {
+                        // Save circle button
+                        IconButton(onClick = { saveImageWithCircle() }) {
+                            Icon(Icons.Default.Check, contentDescription = "Save with Circle")
+                        }
+                    } else if (!isCircledVersion) {
+                        // Add circle button for non-circled images
+                        IconButton(onClick = { showCircle = true }) {
+                            Icon(Icons.Default.Add, contentDescription = "Add Circle")
+                        }
+                    }
+
+                    // Options menu for circled images
+                    if (isCircledVersion) {
+                        Box {
+                            IconButton(onClick = { showOptionsMenu = !showOptionsMenu }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More Options")
+                            }
+
+                            DropdownMenu(
+                                expanded = showOptionsMenu,
+                                onDismissRequest = { showOptionsMenu = false }
+                            ) {
+                                DropdownMenuItem(onClick = {
+                                    viewOriginalImage()
+                                    showOptionsMenu = false
+                                }) {
+                                    Text("View Original")
+                                }
+
+                                DropdownMenuItem(onClick = {
+                                    revertToOriginal()
+                                    showOptionsMenu = false
+                                }) {
+                                    Text("Revert to Original")
+                                }
+                            }
+                        }
                     }
                 }
             )
         },
         bottomBar = {
-            // Show thickness slider when circle is visible
+            // Circle thickness slider
             AnimatedVisibility(
                 visible = showCircle,
                 enter = fadeIn() + slideInVertically { it },
@@ -557,7 +785,7 @@ fun ImageViewerScreen(
             contentAlignment = Alignment.Center
         ) {
             if (imageUri != null) {
-                // Display the image with zoom capabilities
+                // Image container
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -565,23 +793,23 @@ fun ImageViewerScreen(
                             containerSize.value = Size(size.width.toFloat(), size.height.toFloat())
                         }
                 ) {
-                    // Image with zoom and pan
+                    // Image with zoom/pan
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageUri)
                             .crossfade(true)
+                            .memoryCachePolicy(CachePolicy.DISABLED)
+                            .diskCachePolicy(CachePolicy.DISABLED)
                             .build(),
                         contentDescription = "Full-size image",
                         modifier = Modifier
                             .fillMaxSize()
-                            // Apply transformations for zoom and pan
                             .graphicsLayer(
                                 scaleX = scale,
                                 scaleY = scale,
                                 translationX = offsetX,
                                 translationY = offsetY
                             )
-                            // Only allow transform gestures when circle is not visible
                             .then(
                                 if (!showCircle) {
                                     Modifier
@@ -591,15 +819,15 @@ fun ImageViewerScreen(
                                                 onDoubleTap = { tapOffset ->
                                                     isGestureInProgress = false
                                                     if (targetScale > 1f) {
-                                                        // Reset zoom with animation
+                                                        // Reset zoom
                                                         targetScale = 1f
                                                         targetOffsetX = 0f
                                                         targetOffsetY = 0f
                                                     } else {
-                                                        // Zoom in centered on tap location with animation
+                                                        // Zoom in on tap point
                                                         targetScale = 2.5f
 
-                                                        // Calculate offset to center zoom on tap point
+                                                        // Calculate container center
                                                         val containerSize = containerSize.value
                                                         val containerCenterX = containerSize.width / 2f
                                                         val containerCenterY = containerSize.height / 2f
@@ -608,11 +836,11 @@ fun ImageViewerScreen(
                                                         val distanceX = tapOffset.x - containerCenterX
                                                         val distanceY = tapOffset.y - containerCenterY
 
-                                                        // Apply scaling factor to offset (with the negative factor to invert direction)
+                                                        // Apply scaling factor to offset
                                                         targetOffsetX = distanceX * (1 - 1/targetScale) * -1f
                                                         targetOffsetY = distanceY * (1 - 1/targetScale) * -1f
 
-                                                        // Constrain the target offset to prevent whitespace
+                                                        // Constrain offsets
                                                         val (maxOffsetX, maxOffsetY) = calculateMaxOffsets(targetScale)
                                                         targetOffsetX = targetOffsetX.coerceIn(-maxOffsetX, maxOffsetX)
                                                         targetOffsetY = targetOffsetY.coerceIn(-maxOffsetY, maxOffsetY)
@@ -625,14 +853,20 @@ fun ImageViewerScreen(
                                 }
                             ),
                         contentScale = ContentScale.Fit,
-                        // Add listener to capture the actual image dimensions
                         onSuccess = { success ->
                             val drawable = success.result.drawable
-                            // Store the intrinsic dimensions of the image
+                            // Store image dimensions
                             imageSize = Size(
                                 drawable.intrinsicWidth.toFloat(),
                                 drawable.intrinsicHeight.toFloat()
                             )
+
+                            // Store bitmap for later use
+                            try {
+                                imageBitmap.value = (drawable as? BitmapDrawable)?.bitmap
+                            } catch (e: Exception) {
+                                Log.e("ImageViewerScreen", "Error getting bitmap: ${e.message}", e)
+                            }
                         }
                     )
 
@@ -676,7 +910,7 @@ fun ImageViewerScreen(
                                                 return@detectDragGestures
                                             }
 
-                                            // If we're near the circle edge (but not on a handle), move the entire circle
+                                            // If near circle edge (but not on handle), move entire circle
                                             val distanceFromCenter = (offset - circlePosition).getDistance()
                                             val isNearEdge = abs(distanceFromCenter - circleRadius) < handleSize
 
@@ -693,7 +927,7 @@ fun ImageViewerScreen(
                                                 "east" -> {
                                                     // Resize from right
                                                     val newRadius = (change.position.x - circlePosition.x)
-                                                    if (newRadius > 30f) { // Minimum size check
+                                                    if (newRadius > 30f) {
                                                         circleRadius = newRadius
                                                     }
                                                 }
@@ -739,7 +973,7 @@ fun ImageViewerScreen(
                                     )
                                 }
                         ) {
-                            // Draw the circle
+                            // Draw circle
                             drawCircle(
                                 color = Color.Red,
                                 radius = circleRadius,
@@ -747,10 +981,10 @@ fun ImageViewerScreen(
                                 style = Stroke(width = circleThickness)
                             )
 
-                            // Draw handles if circle is visible
+                            // Draw handles
                             val handleRadius = 15f
 
-                            // Draw east handle (right)
+                            // East handle (right)
                             drawCircle(
                                 color = Color.White,
                                 radius = handleRadius,
@@ -764,7 +998,7 @@ fun ImageViewerScreen(
                                 style = Stroke(width = 2f)
                             )
 
-                            // Draw west handle (left)
+                            // West handle (left)
                             drawCircle(
                                 color = Color.White,
                                 radius = handleRadius,
@@ -778,7 +1012,7 @@ fun ImageViewerScreen(
                                 style = Stroke(width = 2f)
                             )
 
-                            // Draw north handle (top)
+                            // North handle (top)
                             drawCircle(
                                 color = Color.White,
                                 radius = handleRadius,
@@ -792,7 +1026,7 @@ fun ImageViewerScreen(
                                 style = Stroke(width = 2f)
                             )
 
-                            // Draw south handle (bottom)
+                            // South handle (bottom)
                             drawCircle(
                                 color = Color.White,
                                 radius = handleRadius,
@@ -809,68 +1043,44 @@ fun ImageViewerScreen(
                     }
                 }
 
-                // Define custom animation specs for enhanced movement
-                // Overshoot easing - goes beyond the target position and bounces back (for enter animation)
-                val overshootEasing = CubicBezierEasing(0.0f, 0.75f, 0.1f, 1.1f)
-
-                // Anticipation easing - pulls back slightly before moving to target (for exit animation)
-                val anticipationEasing = CubicBezierEasing(0.5f, -0.2f, 0.9f, 0.3f)
-
-                // Animate the size of the button for additional visual interest
-                val buttonScale by animateFloatAsState(
-                    targetValue = 1f,
-                    // Start larger than final size and bounce down
-                    animationSpec = tween(
-                        durationMillis = 500,
-                        easing = CubicBezierEasing(0.2f, 1.5f, 0.3f, 1.0f)
-                    )
-                )
-
-                // Reset zoom button overlay with enhanced animations
+                // Reset zoom button (only when zoomed in and circle not visible)
                 AnimatedVisibility(
-                    visible = scale > 1.01f && !showCircle, // Only show when zoomed in AND circle not visible
+                    visible = scale > 1.01f && !showCircle,
                     enter = slideInVertically(
-                        // Start from further below for more dramatic overshoot
                         initialOffsetY = { it + 40 },
                         animationSpec = tween(
-                            // Longer duration for more noticeable effect
                             durationMillis = 450,
-                            easing = overshootEasing
+                            easing = CubicBezierEasing(0.0f, 0.75f, 0.1f, 1.1f)
                         )
                     ) + fadeIn(
-                        // Slightly faster fade-in
                         animationSpec = tween(300)
                     ),
                     exit = slideOutVertically(
-                        // First move upward slightly (anticipation) then downward
                         targetOffsetY = { it + 30 },
                         animationSpec = tween(
                             durationMillis = 400,
-                            easing = anticipationEasing
+                            easing = CubicBezierEasing(0.5f, -0.2f, 0.9f, 0.3f)
                         )
                     ) + fadeOut(
-                        // Fade out slightly faster than movement
                         animationSpec = tween(300)
                     ),
                     modifier = Modifier
                         .fillMaxSize()
-                        // Add significant padding on all sides to accommodate shadows
                         .padding(36.dp),
                 ) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.BottomEnd
                     ) {
-                        // Use offset to create space for shadow and ensure button stays in right position
                         val shadowOffset = with(LocalDensity.current) { 8.dp.toPx() }
 
                         FloatingActionButton(
                             onClick = {
-                                // Reset zoom with smooth animation
+                                // Reset zoom with animation
                                 isGestureInProgress = false
                                 targetScale = 1f
 
-                                // Small delay to allow scale animation to start before resetting position
+                                // Small delay to allow scale animation to start
                                 CoroutineScope(Dispatchers.Main).launch {
                                     delay(50)
                                     targetOffsetX = 0f
@@ -884,9 +1094,9 @@ fun ImageViewerScreen(
                             ),
                             modifier = Modifier
                                 .graphicsLayer(
-                                    scaleX = buttonScale,
-                                    scaleY = buttonScale,
-                                    translationY = -shadowOffset // Lift button to ensure shadow is visible
+                                    scaleX = 1f,
+                                    scaleY = 1f,
+                                    translationY = -shadowOffset
                                 )
                         ) {
                             Icon(
@@ -904,7 +1114,37 @@ fun ImageViewerScreen(
         }
     }
 
-    // Handle back button explicitly
+    // Revert confirmation dialog
+    if (showRevertConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showRevertConfirmation = false },
+            title = { Text("Confirm Revert") },
+            text = { Text("Are you sure you want to delete the circled version of the image?") },
+            confirmButton = {
+                Button(onClick = {
+                    CoroutineScope(Dispatchers.Main).launch {
+                        // Delete the circled image
+                        viewModel.deleteImage(imageId)
+
+                        // Navigate to original
+                        navController.navigate("imageViewer/$projectId/$apId/${originalImageEntity.value?.id}") {
+                            popUpTo("imageViewer/$projectId/$apId/$imageId") { inclusive = true }
+                        }
+                    }
+                    showRevertConfirmation = false
+                }) {
+                    Text("Yes")
+                }
+            },
+            dismissButton = {
+                Button(onClick = { showRevertConfirmation = false }) {
+                    Text("No")
+                }
+            }
+        )
+    }
+
+    // Handle back button
     BackHandler {
         if (showCircle) {
             // If circle is visible, hide it first
@@ -1112,18 +1352,21 @@ fun ModernProjectDetailScreen(
     val accessPoints by viewModel.getAccessPointsForProjectFlow(projectWithAP.project.id)
         .collectAsState(initial = projectWithAP.accessPoints)
 
-    // Verify image files exist when access point list changes
-    // This handles cases where files may have been deleted outside the app
+    // Map to store image counts per access point
+    val apImageCounts = remember { mutableStateMapOf<String, Int>() }
+
+    // Load image counts for each access point
     LaunchedEffect(accessPoints) {
         accessPoints.forEach { ap ->
-            // Filter out any file names that don't exist in the filesystem
-            val validImages = ap.pictures.filter { pictureName ->
-                val file = File(context.filesDir, pictureName)
-                file.exists()
-            }
-            // Update the database if any images were found to be missing
-            if (validImages.size != ap.pictures.size) {
-                viewModel.updateAccessPoint(ap.copy(pictures = validImages))
+            // For each AP, launch a coroutine to get its image count
+            CoroutineScope(Dispatchers.IO).launch {
+                // This is the correct way to call first() as a suspend function
+                val images = viewModel.getDisplayImagesForAccessPointFlow(ap.id).first()
+                val imageCount = images.size
+
+                withContext(Dispatchers.Main) {
+                    apImageCounts[ap.id] = imageCount
+                }
             }
         }
     }
@@ -1144,8 +1387,8 @@ fun ModernProjectDetailScreen(
             // Then sort by the number (e.g., "01" becomes 1)
             { it.name.dropWhile { char -> !char.isDigit() }.toIntOrNull() ?: 0 }
         ))
-        "Number of Pictures" -> accessPoints.sortedByDescending { it.pictures.size }
-        "APs without Pictures" -> accessPoints.sortedBy { if (it.pictures.isEmpty()) 0 else 1 }
+        "Number of Pictures" -> accessPoints.sortedByDescending { apImageCounts[it.id] ?: 0 }
+        "APs without Pictures" -> accessPoints.sortedBy { if (apImageCounts[it.id] == 0) 0 else 1 }
         else -> accessPoints
     }
 
@@ -1278,7 +1521,7 @@ fun ModernProjectDetailScreen(
                         Column(modifier = Modifier.fillMaxWidth()) {
                             // AP name and photo count
                             Text(
-                                text = "${ap.name} (${ap.pictures.size})",
+                                text = "${ap.name} (${apImageCounts[ap.id] ?: 0})",
                                 style = MaterialTheme.typography.subtitle1
                             )
                             // Help text
@@ -1338,21 +1581,45 @@ fun ModernProjectDetailScreen(
             onDismiss = { showExportDialog = false },
             // Handler for Save option
             onSave = { progressState, isZipping, onDismissExport ->
-                // Prepare images before export: rename files for consistency
-                projectWithAP.accessPoints.forEach { ap ->
-                    val renamedImages = renameAPImages(
-                        context,
-                        projectWithAP.project.id, // Add project ID
-                        ap.name,
-                        ap.pictures
-                    )
-                    if (renamedImages != ap.pictures) {
-                        viewModel.updateAccessPoint(ap.copy(pictures = renamedImages))
-                    }
-                }
-                // Export files to zip in background thread
+                // Prepare images before export using the new ImageEntity system
                 CoroutineScope(Dispatchers.IO).launch {
-                    val zipFile = exportProjectToZip(context, projectWithAP, progressState, isZipping, onDismissExport)
+                    // For each access point, ensure filenames are properly sequential
+                    projectWithAP.accessPoints.forEach { ap ->
+                        // Get all images for this AP
+                        val images = viewModel.getImagesForAccessPointFlow(ap.id).first()
+
+                        // Sort by order index
+                        val sortedImages = images.sortedBy { it.orderIndex }
+
+                        // Update filenames if needed
+                        sortedImages.forEachIndexed { index, image ->
+                            val expectedFilename = "${projectWithAP.project.id}_${ap.name}-${index + 1}.jpg"
+
+                            if (image.filename != expectedFilename) {
+                                // Rename the file
+                                val oldFile = File(context.filesDir, image.filename)
+                                val newFile = File(context.filesDir, expectedFilename)
+
+                                if (oldFile.exists()) {
+                                    oldFile.renameTo(newFile)
+
+                                    // Update database
+                                    viewModel.updateImage(image.copy(filename = expectedFilename))
+                                }
+                            }
+                        }
+                    }
+
+                    // Now create the zip file
+                    val zipFile = createProjectZip(
+                        context,
+                        projectWithAP,
+                        viewModel,
+                        progressState,
+                        isZipping,
+                        onDismissExport
+                    )
+
                     withContext(Dispatchers.Main) {
                         // UI updates can be added here
                         val savedFile = saveZipToDocuments(context, zipFile)
@@ -1366,28 +1633,52 @@ fun ModernProjectDetailScreen(
             },
             // Handler for Share option
             onShare = { progressState, isZipping, onDismissExport ->
-                // Prepare images before export: rename files for consistency
-                projectWithAP.accessPoints.forEach { ap ->
-                    val renamedImages = renameAPImages(
-                        context,
-                        projectWithAP.project.id, // Add project ID
-                        ap.name,
-                        ap.pictures
-                    )
-                    if (renamedImages != ap.pictures) {
-                        viewModel.updateAccessPoint(ap.copy(pictures = renamedImages))
-                    }
-                }
-                // Create and share zip in background thread
+                // Prepare images before export using the new ImageEntity system
                 CoroutineScope(Dispatchers.IO).launch {
-                    val zipFile = exportProjectToZip(context, projectWithAP, progressState, isZipping, onDismissExport)
+                    // For each access point, ensure filenames are properly sequential
+                    projectWithAP.accessPoints.forEach { ap ->
+                        // Get all images for this AP
+                        val images = viewModel.getImagesForAccessPointFlow(ap.id).first()
+
+                        // Sort by order index
+                        val sortedImages = images.sortedBy { it.orderIndex }
+
+                        // Update filenames if needed
+                        sortedImages.forEachIndexed { index, image ->
+                            val expectedFilename = "${projectWithAP.project.id}_${ap.name}-${index + 1}.jpg"
+
+                            if (image.filename != expectedFilename) {
+                                // Rename the file
+                                val oldFile = File(context.filesDir, image.filename)
+                                val newFile = File(context.filesDir, expectedFilename)
+
+                                if (oldFile.exists()) {
+                                    oldFile.renameTo(newFile)
+
+                                    // Update database
+                                    viewModel.updateImage(image.copy(filename = expectedFilename))
+                                }
+                            }
+                        }
+                    }
+
+                    // Now create the zip file
+                    val zipFile = createProjectZip(
+                        context,
+                        projectWithAP,
+                        viewModel,
+                        progressState,
+                        isZipping,
+                        onDismissExport
+                    )
+
                     withContext(Dispatchers.Main) {
                         shareZipFile(context, zipFile)
                     }
                 }
             },
             // Warning message for APs with insufficient photos
-            warningMessage = accessPoints.filter { it.pictures.size < 2 }
+            warningMessage = accessPoints.filter { apImageCounts[it.id] ?: 0 < 2 }
                 .joinToString { it.name }
                 .takeIf { it.isNotEmpty() }
                 ?.let { "Warning: The following AP(s) have fewer than 2 pictures: $it" }
@@ -1399,6 +1690,67 @@ fun ModernProjectDetailScreen(
         apSelectionMode = false
         selectedAPs.clear()
     }
+}
+
+// New helper function to create the project zip file with the new image system
+suspend fun createProjectZip(
+    context: Context,
+    projectWithAP: ProjectWithAccessPoints,
+    viewModel: ProjectViewModel,
+    progressState: MutableState<Int>,
+    isZipping: MutableState<Boolean>,
+    onDismiss: () -> Unit
+): File {
+    // Create a zip file in the app's cache directory
+    val zipFile = File(context.cacheDir, "${projectWithAP.project.name}.zip")
+
+    // Calculate total number of images to track progress
+    var totalImages = 0
+    var processedImages = 0
+
+    projectWithAP.accessPoints.forEach { ap ->
+        val imageCount = viewModel.getImagesForAccessPointFlow(ap.id).first().size
+        totalImages += imageCount
+    }
+
+    // Create ZIP stream and add files
+    ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
+        projectWithAP.accessPoints.forEach { ap ->
+            // Get all images for this AP
+            val images = viewModel.getImagesForAccessPointFlow(ap.id).first()
+
+            // Sort by order index
+            val sortedImages = images.sortedBy { it.orderIndex }
+
+            // Add each image to the zip
+            sortedImages.forEachIndexed { index, image ->
+                // Get source file from internal storage
+                val file = File(context.filesDir, image.filename)
+                if (file.exists()) {
+                    // Create clean filename for the ZIP entry (without project ID)
+                    val formattedFileName = "${ap.name}-${index + 1}.jpg"
+                    val entry = ZipEntry(formattedFileName)
+
+                    // Add file to ZIP
+                    zos.putNextEntry(entry)
+                    file.inputStream().copyTo(zos)
+                    zos.closeEntry()
+
+                    // Update progress
+                    processedImages++
+                    progressState.value = ((processedImages.toFloat() / totalImages) * 100).toInt()
+                }
+            }
+        }
+    }
+
+    // Switch back to Main thread to update UI when done
+    withContext(Dispatchers.Main) {
+        isZipping.value = false
+        onDismiss()
+    }
+
+    return zipFile
 }
 
 /**
@@ -1430,69 +1782,51 @@ fun ModernAPDetailScreen(
     accessPoint: AccessPointEntity,
     navController: NavHostController,
     viewModel: ProjectViewModel
-    ) {
+) {
     val context = LocalContext.current
 
-    // State for the list of image file names stored in the database
-    // We use a custom stateSaver to preserve this across recompositions
-    val fullSizeImagesState = rememberSaveable(stateSaver = listSaver(
-        save = { it },
-        restore = { it }
-    )) { mutableStateOf(accessPoint.pictures) }
+    // Get display images (preferring circled versions when available)
+    val displayImages by viewModel.getDisplayImagesForAccessPointFlow(accessPoint.id)
+        .collectAsState(initial = emptyList())
 
-    // Holds the filename for a newly captured image
-    var currentFileName by remember { mutableStateOf("") }
-
-    // Validate and reorganize image files when first entering the screen
-    LaunchedEffect(accessPoint.id) {
-        // Remove any non-existent files from the list
-        val validImages = fullSizeImagesState.value.filter { pictureName ->
-            val file = File(context.filesDir, pictureName)
-            file.exists()
-        }
-
-        // Rename files to ensure sequential numbering, now including project ID
-        val renamedImages = renameAPImages(
-            context,
-            projectWithAP.project.id, // Pass the project ID
-            accessPoint.name,
-            validImages
-        )
-
-        // Update the database if any changes were made
-        if (renamedImages != fullSizeImagesState.value) {
-            fullSizeImagesState.value = renamedImages
-            viewModel.updateAccessPoint(accessPoint.copy(pictures = renamedImages))
-        }
-    }
-
-    // UI state variables
-    var selectionMode by remember { mutableStateOf(false) } // Whether multi-select mode is active
-    val selectedPictures = remember { mutableStateListOf<String>() } // Currently selected pictures
-    var showDeleteDialog by remember { mutableStateOf(false) } // Whether to show deletion confirmation
-
-    // URI for the camera output file, preserved across configuration changes
+    // Current photo capture state
+    var currentImageName by remember { mutableStateOf("") }
     var imageUri: Uri? by rememberSaveable(stateSaver = UriNullableSaver) { mutableStateOf(null) }
 
-    // Override system back button in selection mode to clear selection instead of navigating back
-    BackHandler(enabled = selectionMode) {
-        selectionMode = false
-        selectedPictures.clear()
-    }
+    // Selection mode state
+    var selectionMode by remember { mutableStateOf(false) }
+    val selectedImages = remember { mutableStateListOf<String>() }
+    var showDeleteDialog by remember { mutableStateOf(false) }
 
-    // Camera integration using ActivityResult API
+    // Camera integration
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success && imageUri != null) {
-            // If photo capture was successful, add the new file to our list
-            fullSizeImagesState.value = fullSizeImagesState.value + currentFileName
+            // If photo capture was successful, add a new ImageEntity to the database
+            CoroutineScope(Dispatchers.IO).launch {
+                // Get the next order index
+                val nextOrderIndex = displayImages.size
 
-            // Persist changes to database
-            viewModel.updateAccessPoint(accessPoint.copy(pictures = fullSizeImagesState.value))
+                // Create new image entity
+                val newImage = ImageEntity(
+                    accessPointId = accessPoint.id,
+                    filename = currentImageName,
+                    isCircled = false,
+                    orderIndex = nextOrderIndex
+                )
+
+                // Add to database
+                viewModel.addImage(newImage)
+            }
         }
+    }
+
+    // Back button handler
+    BackHandler(enabled = selectionMode) {
+        selectionMode = false
+        selectedImages.clear()
     }
 
     Scaffold(
-        // Top app bar with title and actions
         topBar = {
             TopAppBar(
                 title = { Text("${accessPoint.name} Pictures", style = MaterialTheme.typography.h6) },
@@ -1502,8 +1836,7 @@ fun ModernAPDetailScreen(
                     }
                 },
                 actions = {
-                    // Show delete button only in selection mode with items selected
-                    if (selectionMode && selectedPictures.isNotEmpty()) {
+                    if (selectionMode && selectedImages.isNotEmpty()) {
                         IconButton(onClick = { showDeleteDialog = true }) {
                             Icon(Icons.Default.Delete, contentDescription = "Delete Selected")
                         }
@@ -1512,30 +1845,27 @@ fun ModernAPDetailScreen(
                 elevation = 4.dp
             )
         },
-        // Floating action button for capturing new photos
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 try {
-                    // Generate a unique sequential filename for the new image, including project ID
-                    currentFileName = "${projectWithAP.project.id}_${accessPoint.name}-${fullSizeImagesState.value.size + 1}.jpg"
-                    val file = File(context.filesDir, currentFileName)
+                    // Generate a unique sequential filename for the new image
+                    currentImageName = "${projectWithAP.project.id}_${accessPoint.name}-${displayImages.size + 1}.jpg"
+                    val file = File(context.filesDir, currentImageName)
 
                     // Ensure parent directories exist
                     file.parentFile?.mkdirs()
 
-                    // Get a content URI for this file using FileProvider
-                    val authority = "${context.packageName}.provider"
+                    // Get content URI for this file
                     val uri = FileProvider.getUriForFile(
                         context,
-                        authority,
+                        "${context.packageName}.provider",
                         file
                     )
                     imageUri = uri
 
-                    // Launch camera with this URI as the output destination
+                    // Launch camera
                     cameraLauncher.launch(uri)
                 } catch (e: Exception) {
-                    // Handle potential FileProvider errors
                     Log.e("ModernAPDetailScreen", "Error launching camera: ${e.message}", e)
                     Toast.makeText(context, "Error launching camera: ${e.message}", Toast.LENGTH_LONG).show()
                 }
@@ -1543,34 +1873,33 @@ fun ModernAPDetailScreen(
                 Icon(Icons.Default.Add, contentDescription = "Add Picture")
             }
         },
-        // Main content area
         content = { paddingValues ->
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
             ) {
-                if (fullSizeImagesState.value.isEmpty()) {
-                    // Empty state when no images are available
+                if (displayImages.isEmpty()) {
+                    // Empty state
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("No pictures available. Tap + to add.", style = MaterialTheme.typography.body1)
                     }
                 } else {
-                    // Grid display of images
+                    // Grid of images
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
                         contentPadding = PaddingValues(8.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(fullSizeImagesState.value) { pictureName ->
-                            val file = File(context.filesDir, pictureName)
+                        items(displayImages) { image ->
+                            val file = File(context.filesDir, image.filename)
 
-                            // Safety check: skip missing files
+                            // Skip missing files
                             if (!file.exists()) {
                                 return@items
                             }
 
-                            // Get content URI with error handling
+                            // Get URI with error handling
                             val imageUri = try {
                                 FileProvider.getUriForFile(
                                     context,
@@ -1578,63 +1907,61 @@ fun ModernAPDetailScreen(
                                     file
                                 )
                             } catch (e: Exception) {
-                                Log.e("ModernAPDetailScreen", "Error getting URI for file: $pictureName", e)
+                                Log.e("ModernAPDetailScreen", "Error getting URI: ${e.message}", e)
                                 null
                             }
 
-                            // Skip rendering if we couldn't get a valid URI
-                            if (imageUri == null) {
-                                return@items
-                            }
+                            if (imageUri == null) return@items
 
-                            // Image tile with selection capabilities
+                            // Image tile
                             Box(
                                 modifier = Modifier
                                     .padding(4.dp)
-                                    .aspectRatio(1f)  // Keep square aspect ratio
+                                    .aspectRatio(1f)
                                     .combinedClickable(
                                         onClick = {
                                             if (selectionMode) {
-                                                // Toggle selection in selection mode
-                                                if (selectedPictures.contains(pictureName)) {
-                                                    selectedPictures.remove(pictureName)
-                                                    if (selectedPictures.isEmpty()) selectionMode = false
+                                                // Toggle selection
+                                                if (selectedImages.contains(image.id)) {
+                                                    selectedImages.remove(image.id)
+                                                    if (selectedImages.isEmpty()) selectionMode = false
                                                 } else {
-                                                    selectedPictures.add(pictureName)
+                                                    selectedImages.add(image.id)
                                                 }
                                             } else {
-                                                // Open image viewer in normal mode
-                                                navController.navigate("imageViewer/${projectWithAP.project.id}/${accessPoint.id}/${pictureName}")
+                                                // Open image viewer
+                                                navController.navigate(
+                                                    "imageViewer/${projectWithAP.project.id}/${accessPoint.id}/${image.id}"
+                                                )
                                             }
                                         },
                                         onLongClick = {
-                                            // Enter selection mode on long press
+                                            // Enter selection mode
                                             if (!selectionMode) selectionMode = true
-                                            if (!selectedPictures.contains(pictureName)) {
-                                                selectedPictures.add(pictureName)
+                                            if (!selectedImages.contains(image.id)) {
+                                                selectedImages.add(image.id)
                                             }
                                         }
                                     )
                             ) {
-
-                                // Display the image using Coil's AsyncImage with explicit cache handling
+                                // Display image
                                 AsyncImage(
                                     model = ImageRequest.Builder(context)
                                         .data(imageUri)
-                                        .diskCachePolicy(CachePolicy.DISABLED) // Disable disk caching
-                                        .memoryCachePolicy(CachePolicy.DISABLED) // Disable memory caching
+                                        .diskCachePolicy(CachePolicy.DISABLED)
+                                        .memoryCachePolicy(CachePolicy.DISABLED)
                                         .build(),
                                     contentDescription = "Picture",
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Crop
                                 )
 
-                                // Overlay for selected items
-                                if (selectionMode && selectedPictures.contains(pictureName)) {
+                                // Selection overlay
+                                if (selectionMode && selectedImages.contains(image.id)) {
                                     Box(
                                         modifier = Modifier
                                             .fillMaxSize()
-                                            .background(Color.Black.copy(alpha = 0.4f)),  // Semi-transparent overlay
+                                            .background(Color.Black.copy(alpha = 0.4f)),
                                         contentAlignment = Alignment.TopEnd
                                     ) {
                                         Icon(
@@ -1647,6 +1974,29 @@ fun ModernAPDetailScreen(
                                         )
                                     }
                                 }
+
+                                // Show circle icon indicator for circled images
+                                if (image.isCircled) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize(),
+                                        contentAlignment = Alignment.BottomEnd
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Add,
+                                            contentDescription = "Has Circle",
+                                            tint = Color.White,
+                                            modifier = Modifier
+                                                .padding(4.dp)
+                                                .size(16.dp)
+                                                .background(
+                                                    color = Color.Red,
+                                                    shape = CircleShape
+                                                )
+                                                .padding(2.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -1655,48 +2005,62 @@ fun ModernAPDetailScreen(
         }
     )
 
-    // Confirmation dialog for deleting photos
+    // Delete confirmation dialog
+    // Delete confirmation dialog
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text("Confirm Deletion") },
             text = {
-                val count = if (selectionMode) selectedPictures.size else 1
-                Text("Are you sure you want to delete $count image(s)?")
+                Text("Are you sure you want to delete ${selectedImages.size} image(s)?")
             },
             confirmButton = {
                 Button(onClick = {
-                    if (selectionMode) {
-                        // Delete the actual files from storage
-                        selectedPictures.forEach { pictureName ->
-                            val file = File(context.filesDir, pictureName)
-                            if (file.exists()) file.delete()
+                    // Delete selected images
+                    CoroutineScope(Dispatchers.IO).launch {
+                        selectedImages.forEach { imageId ->
+                            // Get the current image
+                            val image = viewModel.getImageById(imageId)
+
+                            if (image != null) {
+                                // If this is a circled image, delete it and also find and delete its original
+                                if (image.isCircled && image.originalImageId != null) {
+                                    // Delete the circled image
+                                    viewModel.deleteImage(imageId)
+
+                                    // Delete the original image too
+                                    viewModel.deleteImage(image.originalImageId)
+                                }
+                                // If this is an original image, find and delete any circled versions
+                                else if (!image.isCircled) {
+                                    // Find circled version
+                                    val circledImage = viewModel.getCircledVersionOfImage(imageId)
+
+                                    // Delete the original image
+                                    viewModel.deleteImage(imageId)
+
+                                    // Delete the circled version if it exists
+                                    if (circledImage != null) {
+                                        viewModel.deleteImage(circledImage.id)
+                                    }
+                                }
+                            }
                         }
 
-                        // Remove references from our state
-                        fullSizeImagesState.value = fullSizeImagesState.value - selectedPictures.toSet()
+                        // Reorder remaining images
+                        viewModel.reorderImagesAfterDeletion(accessPoint.id)
 
-                        // Renumber remaining files to maintain sequential naming
-                        val renamedImages = renameAPImages(
-                            context,
-                            projectWithAP.project.id, // Add project ID
-                            accessPoint.name,
-                            fullSizeImagesState.value
-                        )
-                        fullSizeImagesState.value = renamedImages
-
-                        // Update database with changes
-                        viewModel.updateAccessPoint(accessPoint.copy(pictures = renamedImages))
-
-                        // Clear selection state
-                        selectedPictures.clear()
-                        selectionMode = false
+                        // Clear selection
+                        withContext(Dispatchers.Main) {
+                            selectedImages.clear()
+                            selectionMode = false
+                            showDeleteDialog = false
+                        }
                     }
-                    showDeleteDialog = false
                 }) {
                     Text("Delete")
                 }
-            },
+            }, // Add this comma here
             dismissButton = {
                 Button(onClick = { showDeleteDialog = false }) {
                     Text("Cancel")
@@ -1822,6 +2186,7 @@ fun saveBitmapToFile(context: Context, bitmap: Bitmap, fileName: String): String
 fun exportProjectToZip(
     context: Context,
     projectWithAP: ProjectWithAccessPoints,
+    viewModel: ProjectViewModel, // Add ViewModel parameter
     progressState: MutableState<Int>,
     isZipping: MutableState<Boolean>,
     onDismiss: () -> Unit
@@ -1829,29 +2194,46 @@ fun exportProjectToZip(
     // Create a zip file in the app's cache directory
     val zipFile = File(context.cacheDir, "${projectWithAP.project.name}.zip")
 
-    // Calculate total files for progress tracking
-    val totalFiles = projectWithAP.accessPoints.sumOf { it.pictures.size }
-    var processedFiles = 0
+    // Calculate total number of images to track progress
+    var totalImages = 0
+    var processedImages = 0
+
+    // First, we need to count total images across all APs
+    runBlocking {
+        projectWithAP.accessPoints.forEach { ap ->
+            val imageCount = viewModel.getDisplayImagesForAccessPointFlow(ap.id).first().size
+            totalImages += imageCount
+        }
+    }
 
     // Create ZIP stream and add files
     ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
-        projectWithAP.accessPoints.forEach { ap ->
-            ap.pictures.forEachIndexed { index, pictureName ->
-                // Get source file from internal storage
-                val file = File(context.filesDir, pictureName)
-                if (file.exists()) {
-                    // Create clean filename for the ZIP entry (without project ID)
-                    val formattedFileName = "${ap.name}-${index + 1}.jpg"
-                    val entry = ZipEntry(formattedFileName)
+        runBlocking {
+            projectWithAP.accessPoints.forEach { ap ->
+                // Get all images for this AP
+                val images = viewModel.getDisplayImagesForAccessPointFlow(ap.id).first()
 
-                    // Add file to ZIP
-                    zos.putNextEntry(entry)
-                    file.inputStream().copyTo(zos)
-                    zos.closeEntry()
+                // Sort by order index
+                val sortedImages = images.sortedBy { it.orderIndex }
 
-                    // Update progress
-                    processedFiles++
-                    progressState.value = ((processedFiles.toFloat() / totalFiles) * 100).toInt()
+                // Add each image to the zip
+                sortedImages.forEachIndexed { index, image ->
+                    // Get source file from internal storage
+                    val file = File(context.filesDir, image.filename)
+                    if (file.exists()) {
+                        // Create clean filename for the ZIP entry (without project ID)
+                        val formattedFileName = "${ap.name}-${index + 1}.jpg"
+                        val entry = ZipEntry(formattedFileName)
+
+                        // Add file to ZIP
+                        zos.putNextEntry(entry)
+                        file.inputStream().copyTo(zos)
+                        zos.closeEntry()
+
+                        // Update progress
+                        processedImages++
+                        progressState.value = ((processedImages.toFloat() / totalImages) * 100).toInt()
+                    }
                 }
             }
         }
@@ -2039,8 +2421,8 @@ fun AddAPDialog(
                     val newAP = AccessPointEntity(
                         id = UUID.randomUUID().toString(),
                         projectId = projectId,
-                        name = name,
-                        pictures = emptyList()
+                        name = name
+                        // Removed the pictures parameter as it's no longer needed
                     )
                     // Save to database
                     viewModel.addAccessPoint(newAP)
