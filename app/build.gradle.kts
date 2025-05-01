@@ -43,9 +43,11 @@ android {
         includeInBundle = true
     }
     buildToolsVersion = "36.0.0"
+
 }
 
 dependencies {
+    implementation(libs.androidx.media3.common.ktx)
     val composeVersion = "1.7.8" // Update this version as needed
 
     implementation(libs.androidx.core.ktx)
@@ -64,7 +66,7 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.material:material")
+    implementation("androidx.compose.material3:material3:1.2.0")
     implementation("androidx.compose.material:material-icons-extended")
     // Navigation for Compose
     implementation("androidx.navigation:navigation-compose:2.8.9")
@@ -94,3 +96,4 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.4.0")
 
 }
+

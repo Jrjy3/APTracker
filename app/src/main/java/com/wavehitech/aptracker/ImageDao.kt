@@ -35,10 +35,15 @@ interface ImageDao {
     @Query("SELECT * FROM images WHERE originalImageId = :originalId LIMIT 1")
     suspend fun getCircledVersionOfImage(originalId: String): ImageEntity?
 
-    @Query("DELETE FROM images WHERE accessPointId = :apId")
-    suspend fun deleteAllImagesForAccessPoint(apId: String)
+    @Query("DELETE FROM images WHERE accessPointId = :accessPointId")
+    suspend fun deleteAllImagesForAccessPoint(accessPointId: String): Int
 
-    // Add this method to update just the order index
+    @Query("SELECT * FROM images WHERE accessPointId = :accessPointId")
+    suspend fun checkForImagesWithAccessPoint(accessPointId: String): List<ImageEntity>
+
     @Query("UPDATE images SET orderIndex = :newIndex WHERE id = :imageId")
     suspend fun updateImageOrder(imageId: String, newIndex: Int)
+
+    @Query("UPDATE images SET orderIndex = :orderIndex WHERE id = :imageId")
+    suspend fun updateOrderIndex(imageId: String, orderIndex: Int)
 }
