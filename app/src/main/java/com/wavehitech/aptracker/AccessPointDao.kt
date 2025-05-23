@@ -12,6 +12,9 @@ interface AccessPointDao {
     @Query("SELECT * FROM access_points WHERE projectId = :projectId")
     fun getAccessPointsForProjectFlow(projectId: String): Flow<List<AccessPointEntity>>
 
+    @Query("SELECT * FROM access_points WHERE projectId = :projectId")
+    suspend fun getAccessPointsForProject(projectId: String): List<AccessPointEntity>
+
     @Insert
     suspend fun insertAccessPoint(accessPoint: AccessPointEntity)
 
@@ -24,4 +27,6 @@ interface AccessPointDao {
     @Query("SELECT * FROM access_points WHERE id = :id LIMIT 1")
     suspend fun getAccessPointById(id: String): AccessPointEntity?
 
+    @Query("SELECT * FROM access_points WHERE id = :apId")
+    fun getAccessPointByIdFlow(apId: String): Flow<AccessPointEntity?>
 }
