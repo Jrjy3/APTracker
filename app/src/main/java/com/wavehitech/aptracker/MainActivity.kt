@@ -350,6 +350,7 @@ fun ModernMainNavHost() {
             }
         }
 
+        // NEW IMAGE VIEWER PAGER - Main entry point for viewing images with swipe functionality
         composable(
             "imageViewer/{projectId}/{apId}/{imageId}",
             arguments = listOf(
@@ -362,7 +363,50 @@ fun ModernMainNavHost() {
             val apId = backStackEntry.arguments?.getString("apId") ?: return@composable
             val imageId = backStackEntry.arguments?.getString("imageId") ?: return@composable
 
-            ImageViewerScreen(
+            // Use our new ImageViewerPagerScreen
+            ImageViewerPagerScreen(
+                projectId = projectId,
+                apId = apId,
+                imageId = imageId,
+                navController = navController
+            )
+        }
+
+        // Single image view for adding circles - maintains the original functionality
+        composable(
+            "singleImageView/{projectId}/{apId}/{imageId}",
+            arguments = listOf(
+                navArgument("projectId") { type = NavType.StringType },
+                navArgument("apId") { type = NavType.StringType },
+                navArgument("imageId") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val projectId = backStackEntry.arguments?.getString("projectId") ?: return@composable
+            val apId = backStackEntry.arguments?.getString("apId") ?: return@composable
+            val imageId = backStackEntry.arguments?.getString("imageId") ?: return@composable
+
+            SingleImageViewScreen(
+                projectId = projectId,
+                apId = apId,
+                imageId = imageId,
+                navController = navController
+            )
+        }
+
+        // Keep the original image viewer for backward compatibility and viewing originals
+        composable(
+            "originalImageViewer/{projectId}/{apId}/{imageId}",
+            arguments = listOf(
+                navArgument("projectId") { type = NavType.StringType },
+                navArgument("apId") { type = NavType.StringType },
+                navArgument("imageId") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val projectId = backStackEntry.arguments?.getString("projectId") ?: return@composable
+            val apId = backStackEntry.arguments?.getString("apId") ?: return@composable
+            val imageId = backStackEntry.arguments?.getString("imageId") ?: return@composable
+
+            OriginalImageViewerScreen(
                 projectId = projectId,
                 apId = apId,
                 imageId = imageId,
@@ -558,26 +602,6 @@ fun ModernMainNavHost() {
                     viewModel = viewModel
                 )
             }
-        }
-
-        composable(
-            "originalImageViewer/{projectId}/{apId}/{imageId}",
-            arguments = listOf(
-                navArgument("projectId") { type = NavType.StringType },
-                navArgument("apId") { type = NavType.StringType },
-                navArgument("imageId") { type = NavType.StringType }
-            )
-        ) { backStackEntry ->
-            val projectId = backStackEntry.arguments?.getString("projectId") ?: return@composable
-            val apId = backStackEntry.arguments?.getString("apId") ?: return@composable
-            val imageId = backStackEntry.arguments?.getString("imageId") ?: return@composable
-
-            OriginalImageViewerScreen(
-                projectId = projectId,
-                apId = apId,
-                imageId = imageId,
-                navController = navController
-            )
         }
     }
 }
