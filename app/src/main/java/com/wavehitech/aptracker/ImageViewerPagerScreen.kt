@@ -719,7 +719,9 @@ fun SimpleImageViewer(
             val imageBitmap = bitmap?.asImageBitmap()
             if (imageBitmap != null) {
                 // Create transformable state for pinch/pan gestures
-                val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
+                val transformableState = rememberTransformableState(
+                    canPan = { scale > 1.01f } // Only allow panning if scale is greater than 1.01f
+                ) { zoomChange, panChange, _ ->
                     // Only apply transforms when not animating
                     if (!isAnimating) {
                         // Update scale with constraints
@@ -730,9 +732,10 @@ fun SimpleImageViewer(
                             // Calculate max offsets to constrain
                             val (maxOffsetX, maxOffsetY) = calculateMaxOffsets(scale)
 
-                            // Apply pan at full sensitivity (removed the scaling factor)
-            offsetX = (offsetX + panChange.x * 2.0f).coerceIn(-maxOffsetX, maxOffsetX)
-            offsetY = (offsetY + panChange.y * 2.0f).coerceIn(-maxOffsetY, maxOffsetY)
+                            // Ensure scale is not zero to prevent division by zero, though it's coerced to be >= 1f
+                            val safeScale = if (scale == 0f) 1f else scale 
+                            offsetX = (offsetX + panChange.x / safeScale).coerceIn(-maxOffsetX, maxOffsetX)
+                            offsetY = (offsetY + panChange.y / safeScale).coerceIn(-maxOffsetY, maxOffsetY)
                         } else {
                             // Reset offsets when scale is 1
                             offsetX = 0f
