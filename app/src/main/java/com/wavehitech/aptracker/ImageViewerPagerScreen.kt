@@ -682,8 +682,9 @@ fun SimpleImageViewer(
 
     // When scale changes, notify the parent about zoom state changes
     // FIX 3: Only report zoomed when actually zoomed AND not in a gesture
-    LaunchedEffect(scale, isInGesture) {
-        val isZoomed = scale > 1.01f && !isInGesture
+    LaunchedEffect(scale) { // Removed isInGesture from key
+        val isZoomed = scale > 1.01f // Removed isInGesture from condition
+        Log.d("SimpleImageViewer", "LaunchedEffect(scale): scale=$scale, isZoomed=$isZoomed. Calling onZoomChanged($isZoomed)")
         onZoomChanged(isZoomed)
     }
 
@@ -730,8 +731,8 @@ fun SimpleImageViewer(
                             val (maxOffsetX, maxOffsetY) = calculateMaxOffsets(scale)
 
                             // Apply pan at full sensitivity (removed the scaling factor)
-                            offsetX = (offsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
-                            offsetY = (offsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
+            offsetX = (offsetX + panChange.x * 2.0f).coerceIn(-maxOffsetX, maxOffsetX)
+            offsetY = (offsetY + panChange.y * 2.0f).coerceIn(-maxOffsetY, maxOffsetY)
                         } else {
                             // Reset offsets when scale is 1
                             offsetX = 0f
